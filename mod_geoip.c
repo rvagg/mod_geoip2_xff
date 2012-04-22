@@ -70,6 +70,9 @@
 #include "apr_strings.h"
 #include <GeoIP.h>
 #include <GeoIPCity.h>
+#include <regex.h>
+#include <arpa/inet.h>
+#include <netdb.h>
 
 typedef struct {
   int GeoIPEnabled;
@@ -77,10 +80,11 @@ typedef struct {
 
 typedef struct {
 	GeoIP **gips;
-	int numGeoIPFiles;
+	int numGeoIPFiles;                    
 	char **GeoIPFilenames;
 	int GeoIPEnabled;
 	int GeoIPEnableUTF8;
+	int GeoIPEnableHostnameLookups;
 	char GeoIPOutput;
 	int GeoIPFlags;
 	int *GeoIPFlags2;
@@ -132,6 +136,7 @@ static void *create_geoip_server_config( apr_pool_t *p, server_rec *d )
 	conf->GeoIPFilenames = NULL;
 	conf->GeoIPEnabled = 0;
 	conf->GeoIPEnableUTF8 = 0;
+	conf->GeoIPEnableHostnameLookups = 0;
 	conf->GeoIPOutput = GEOIP_INIT;
 	conf->GeoIPFlags = GEOIP_STANDARD;
 	conf->GeoIPFlags2 = NULL;
@@ -291,6 +296,55 @@ geoip_per_dir(request_rec * r)
 	return geoip_header_parser(r);
 }
 
+char* ipregex = "([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3})";
+char* privipregex = "(^127\\.0\\.0\\.1)|(^10\\.)|(^172\\.1[6-9]\\.)|(^172\\.2[0-9]\\.)|(^172\\.3[0-1]\\.)|(^192\\.168\\.)";
+int ipregexok = -1;
+regex_t ipcompiledregex;
+regex_t privipcompiledregex;
+
+char* first_public_ip_in_list(char* instr) {
+	if (ipregexok = -1)
+		ipregexok = (regcomp(&ipcompiledregex, ipregex, REG_EXTENDED) == 0 && regcomp(&privipcompiledregex, privipregex, REG_EXTENDED) == 0) ? 1 : 0;
+
+	char* match = 0;
+	if (ipregexok) {
+		int len = sizeof(char) * strlen(instr) + 1;
+		int matched = 0;
+		char* str = malloc(len);
+		strcpy(str, instr);
+		char* tmp = malloc(len);
+		regmatch_t* matches = malloc(sizeof(regmatch_t));
+		regmatch_t* privmatches = malloc(sizeof(regmatch_t));
+		while (regexec(&ipcompiledregex, str, 1, matches, 0) == 0) {
+			int eo = matches[0].rm_eo;
+			if (matches[0].rm_so > -1){
+				match = malloc(len);
+				len = eo - matches[0].rm_so;
+				strncpy(match, str + matches[0].rm_so, len);
+				match[len] = 0;
+				if (regexec(&privipcompiledregex, match, 1, privmatches, 0) != 0 || privmatches[0].rm_so < 0)
+					break;
+				free(match);
+				match = 0;
+			}
+			if (eo < strlen(str)) {
+				strcpy(tmp, str + eo);
+				strcpy(str, tmp);
+			} else
+				break;
+		}
+		free(tmp);
+		free(matches);
+		free(privmatches);
+	}
+	if (!match) {
+		//return original string
+		int len = strlen(instr) + 1;
+		match = malloc(len);
+		strncpy(match, instr, len);
+	}
+	return match;
+}
 
 static int 
 geoip_header_parser(request_rec * r)
@@ -350,11 +404,13 @@ geoip_header_parser(request_rec * r)
 			 * separated list, return the first IP address in the
 			 * list, which is (hopefully!) the real client IP.
 			 */
+			char* found_ip = first_public_ip_in_list(ipaddr_ptr);
 			ipaddr = (char *) calloc(16, sizeof(char));
-			strncpy(ipaddr, ipaddr_ptr, 15);
+			strncpy(ipaddr, found_ip, 15);
 			comma_ptr = strchr(ipaddr, ',');
 			if (comma_ptr != 0)
 				*comma_ptr = '\0';
+			free(found_ip);
 		}
 	}
 
@@ -388,12 +444,20 @@ geoip_header_parser(request_rec * r)
 		}
 	}
 #endif
+	unsigned long ip = inet_addr(ipaddr);
+	char *hostname;
+	struct hostent *host = NULL;
+	if (cfg->GeoIPEnableHostnameLookups)
+		host = gethostbyaddr((char *)&ip, 4, AF_INET);
+	hostname = host != NULL ? host->h_name : ipaddr;
 
   if (cfg->GeoIPOutput & GEOIP_NOTES) {
-		         apr_table_setn(r->notes, "GEOIP_ADDR", ipaddr);
+	 apr_table_setn(r->notes, "GEOIP_ADDR", ipaddr);
+	 apr_table_setn(r->notes, "GEOIP_HOST", hostname);
   }
   if (cfg->GeoIPOutput & GEOIP_ENV) { 
          apr_table_setn(r->subprocess_env, "GEOIP_ADDR", ipaddr);
+	 apr_table_setn(r->subprocess_env, "GEOIP_HOST", hostname);
   }
 
 	for (i = 0; i < cfg->numGeoIPFiles; i++) {
@@ -633,6 +697,19 @@ static const char *set_geoip_enable_utf8(cmd_parms *cmd, void *dummy, int arg)
 }
 
 
+static const char *set_geoip_enable_hostname(cmd_parms *cmd, void *dummy, int arg)
+{
+	geoip_server_config_rec *conf = (geoip_server_config_rec *)
+	ap_get_module_config(cmd->server->module_config, &geoip_module);
+
+	if (!conf)
+		return "mod_geoip: server structure not allocated";
+
+	conf->GeoIPEnableHostnameLookups = arg;
+	return NULL;
+}
+
+
 static const char *set_geoip_filename(cmd_parms *cmd, void *dummy, const char *filename,const char *arg2)
 {
 	int i;
@@ -690,6 +767,7 @@ static void *make_geoip(apr_pool_t *p, server_rec *d)
 	dcfg->GeoIPFilenames = NULL;
 	dcfg->GeoIPEnabled = 0;
 	dcfg->GeoIPEnableUTF8 = 0;
+	dcfg->GeoIPEnableHostnameLookups = 0;
 	dcfg->GeoIPOutput = GEOIP_INIT;
 	dcfg->GeoIPFlags = GEOIP_STANDARD;
 	dcfg->GeoIPFlags2 = NULL;
@@ -702,6 +780,7 @@ static const command_rec geoip_cmds[] =
 	AP_INIT_FLAG("GeoIPScanProxyHeaders", geoip_scanproxy, NULL, RSRC_CONF, "Get IP from HTTP_CLIENT IP or X-Forwarded-For"),
 	AP_INIT_FLAG("GeoIPEnable", set_geoip_enable, NULL, RSRC_CONF | OR_FILEINFO, "Turn on mod_geoip"),
 	AP_INIT_FLAG("GeoIPEnableUTF8", set_geoip_enable_utf8, NULL, RSRC_CONF, "Turn on utf8 characters for city names"),
+	AP_INIT_FLAG("GeoIPEnableHostnameLookups", set_geoip_enable_hostname, NULL, RSRC_CONF, "Turn on hostname lookups for GEOIP_HOST"),
 	AP_INIT_TAKE12("GeoIPDBFile", set_geoip_filename, NULL, RSRC_CONF, "Path to GeoIP Data File"),
 	AP_INIT_ITERATE("GeoIPOutput", set_geoip_output, NULL, RSRC_CONF, "Specify output method(s)"),
 	{NULL}
