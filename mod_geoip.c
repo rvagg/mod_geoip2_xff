@@ -49,7 +49,7 @@
 
 /* geoip module
  *
- * Version 1.2.5
+ * Version 1.2.7
  *
  * This module sets an environment variable to the remote country
  * based on the requestor's IP address.  It uses the GeoIP library
@@ -80,7 +80,7 @@ typedef struct {
 
 typedef struct {
 	GeoIP **gips;
-	int numGeoIPFiles;                    
+	int numGeoIPFiles;
 	char **GeoIPFilenames;
 	int GeoIPEnabled;
 	int GeoIPEnableUTF8;
@@ -89,6 +89,7 @@ typedef struct {
 	int GeoIPFlags;
 	int *GeoIPFlags2;
 	int scanProxyHeaders;
+        int use_last_x_forwarded_for_ip;
 } geoip_server_config_rec;
 
 static const int GEOIP_NONE    = 0;
@@ -100,7 +101,7 @@ static const int GEOIP_INIT    = 7;
 
 static const int GEOIP_UNKNOWN = -1;
 
-char dmacodestr[100];
+char metrocodestr[100];
 char areacodestr[100];
 char latstr[100];
 char lonstr[100];
@@ -141,6 +142,7 @@ static void *create_geoip_server_config( apr_pool_t *p, server_rec *d )
 	conf->GeoIPFlags = GEOIP_STANDARD;
 	conf->GeoIPFlags2 = NULL;
 	conf->scanProxyHeaders = 0;
+        conf->use_last_x_forwarded_for_ip = 0;
 	return (void *)conf;
 }
 
@@ -396,6 +398,8 @@ geoip_header_parser(request_rec * r)
 		}
 		else {
 			ap_log_error(APLOG_MARK, APLOG_DEBUG | APLOG_NOERRNO, 0, r->server, "[mod_geoip]: IPADDR_PTR: %s", ipaddr_ptr);
+			// find the first public IP address in a potentially comma-separated list
+			char* found_ip = first_public_ip_in_list(ipaddr_ptr);
 			/*
 			 * Check to ensure that the HTTP_CLIENT_IP or
 			 * X-Forwarded-For header is not a comma separated
@@ -404,14 +408,22 @@ geoip_header_parser(request_rec * r)
 			 * separated list, return the first IP address in the
 			 * list, which is (hopefully!) the real client IP.
 			 */
-			char* found_ip = first_public_ip_in_list(ipaddr_ptr);
-			ipaddr = (char *) calloc(16, sizeof(char));
-			strncpy(ipaddr, found_ip, 15);
+			ipaddr = (char *) calloc(8*4+7+1, sizeof(char));
+
+			if (cfg->use_last_x_forwarded_for_ip ){
+				comma_ptr = strrchr(found_ip, ',');
+				if ( comma_ptr ) {
+					/* skip over whitespace */
+					found_ip = comma_ptr + strspn(comma_ptr, ", \t");
+				}
+			}
+
+			strncpy(ipaddr, found_ip, 8*4+7);
 			comma_ptr = strchr(ipaddr, ',');
 			if (comma_ptr != 0)
 				*comma_ptr = '\0';
 			free(found_ip);
-		}
+ 		}
 	}
 
 /* this block should be removed! */
@@ -451,14 +463,14 @@ geoip_header_parser(request_rec * r)
 		host = gethostbyaddr((char *)&ip, 4, AF_INET);
 	hostname = host != NULL ? host->h_name : ipaddr;
 
-  if (cfg->GeoIPOutput & GEOIP_NOTES) {
+	if (cfg->GeoIPOutput & GEOIP_NOTES) {
 	 apr_table_setn(r->notes, "GEOIP_ADDR", ipaddr);
 	 apr_table_setn(r->notes, "GEOIP_HOST", hostname);
-  }
-  if (cfg->GeoIPOutput & GEOIP_ENV) { 
-         apr_table_setn(r->subprocess_env, "GEOIP_ADDR", ipaddr);
+	}
+	if (cfg->GeoIPOutput & GEOIP_ENV) { 
+				 apr_table_setn(r->subprocess_env, "GEOIP_ADDR", ipaddr);
 	 apr_table_setn(r->subprocess_env, "GEOIP_HOST", hostname);
-  }
+	}
 
 	for (i = 0; i < cfg->numGeoIPFiles; i++) {
 
@@ -473,6 +485,18 @@ geoip_header_parser(request_rec * r)
 												 * in case file not
 												 * found */
 		switch (databaseType) {
+                case GEOIP_NETSPEED_EDITION_REV1:
+                  orgorisp = GeoIP_name_by_addr(cfg->gips[i], ipaddr);
+                  if (orgorisp != NULL) {
+   	            if (cfg->GeoIPOutput & GEOIP_NOTES) {
+	              apr_table_setn(r->notes, "GEOIP_NETSPEED", orgorisp);
+	            }
+	            if (cfg->GeoIPOutput & GEOIP_ENV) {
+	              apr_table_setn(r->subprocess_env, "GEOIP_NETSPEED", orgorisp);
+	            }
+                  }
+                break;
+ 
 		case GEOIP_NETSPEED_EDITION:
 			netspeed = GeoIP_id_by_addr(cfg->gips[i], ipaddr);
 			if (netspeed == GEOIP_UNKNOWN_SPEED) {
@@ -492,6 +516,35 @@ geoip_header_parser(request_rec * r)
 			}
 			if (cfg->GeoIPOutput & GEOIP_ENV) {
 				apr_table_setn(r->subprocess_env, "GEOIP_NETSPEED", netspeedstring);
+			}
+			break;
+		case GEOIP_COUNTRY_EDITION_V6:
+			/* Get the Country ID */
+			country_id = GeoIP_country_id_by_addr_v6(cfg->gips[i], ipaddr);
+
+      if ( country_id > 0 ) {
+			  /* Lookup the Code and the Name with the ID */
+			  continent_code = GeoIP_country_continent[country_id];
+			  country_code = GeoIP_country_code[country_id];
+			  country_name = GeoIP_country_name[country_id];
+
+			  if (cfg->numGeoIPFiles == 0) {
+				  cfg->numGeoIPFiles = 0;
+			  }
+			  if (cfg->GeoIPFilenames == 0) {
+				  cfg->GeoIPFilenames = 0;
+			  }
+			  /* Set it for our user */
+			  if (cfg->GeoIPOutput & GEOIP_NOTES) {
+				  apr_table_setn(r->notes, "GEOIP_CONTINENT_CODE_V6", continent_code);
+		  		apr_table_setn(r->notes, "GEOIP_COUNTRY_CODE_V6", country_code);
+			  	apr_table_setn(r->notes, "GEOIP_COUNTRY_NAME_V6", country_name);
+			  }
+			  if (cfg->GeoIPOutput & GEOIP_ENV) {
+				  apr_table_setn(r->subprocess_env, "GEOIP_CONTINENT_CODE_V6", continent_code);
+				  apr_table_setn(r->subprocess_env, "GEOIP_COUNTRY_CODE_V6", country_code);
+				  apr_table_setn(r->subprocess_env, "GEOIP_COUNTRY_NAME_V6", country_name);
+			  }
 			}
 			break;
 		case GEOIP_COUNTRY_EDITION:
@@ -555,6 +608,74 @@ geoip_header_parser(request_rec * r)
 				GeoIPRegion_delete(giregion);
 			}
 			break;
+		case GEOIP_CITY_EDITION_REV0_V6:
+		case GEOIP_CITY_EDITION_REV1_V6:
+			gir = GeoIP_record_by_addr_v6(cfg->gips[i], ipaddr);
+			if (gir != NULL) {
+			        if ( gir->country_code != NULL ) {
+				  region_name = GeoIP_region_name_by_code(gir->country_code, gir->region);
+				}
+				sprintf(metrocodestr, "%d", gir->dma_code);
+				sprintf(areacodestr, "%d", gir->area_code);
+				if (cfg->GeoIPOutput & GEOIP_NOTES) {
+					apr_table_setn(r->notes, "GEOIP_CONTINENT_CODE_V6", gir->continent_code);
+					apr_table_setn(r->notes, "GEOIP_COUNTRY_CODE_V6", gir->country_code);
+					apr_table_setn(r->notes, "GEOIP_COUNTRY_NAME_V6", gir->country_name);
+					if (gir->region != NULL) {
+						apr_table_set(r->notes, "GEOIP_REGION_V6", gir->region);
+						if ( region_name != NULL ){
+						  apr_table_set(r->notes, "GEOIP_REGION_NAME_V6", region_name);
+						}
+					}
+					if (gir->city != NULL) {
+						apr_table_set(r->notes, "GEOIP_CITY_V6", gir->city);
+					}
+					apr_table_setn(r->notes, "GEOIP_DMA_CODE_V6", metrocodestr);
+					apr_table_setn(r->notes, "GEOIP_METRO_CODE_V6", metrocodestr);
+					apr_table_setn(r->notes, "GEOIP_AREA_CODE_V6", areacodestr);
+				}
+				if (cfg->GeoIPOutput & GEOIP_ENV) {
+					apr_table_setn(r->subprocess_env, "GEOIP_CONTINENT_CODE_V6", gir->continent_code);
+					apr_table_setn(r->subprocess_env, "GEOIP_COUNTRY_CODE_V6", gir->country_code);
+					apr_table_setn(r->subprocess_env, "GEOIP_COUNTRY_NAME_V6", gir->country_name);
+					if (gir->region != NULL) {
+						apr_table_set(r->subprocess_env, "GEOIP_REGION_V6", gir->region);
+						if ( region_name != NULL ){
+						  apr_table_set(r->subprocess_env, "GEOIP_REGION_NAME_V6", region_name);
+						}
+					}
+					if (gir->city != NULL) {
+						apr_table_set(r->subprocess_env, "GEOIP_CITY_V6", gir->city);
+					}
+					apr_table_setn(r->subprocess_env, "GEOIP_DMA_CODE_V6", metrocodestr);
+					apr_table_setn(r->subprocess_env, "GEOIP_METRO_CODE_V6", metrocodestr);
+					apr_table_setn(r->subprocess_env, "GEOIP_AREA_CODE_V6", areacodestr);
+				}
+				sprintf(latstr, "%f", gir->latitude);
+				sprintf(lonstr, "%f", gir->longitude);
+				if (cfg->GeoIPOutput & GEOIP_NOTES) {
+					apr_table_setn(r->notes, "GEOIP_LATITUDE_V6", latstr);
+				}
+				if (cfg->GeoIPOutput & GEOIP_ENV) {
+					apr_table_setn(r->subprocess_env, "GEOIP_LATITUDE_V6", latstr);
+				}
+				if (cfg->GeoIPOutput & GEOIP_NOTES) {
+					apr_table_setn(r->notes, "GEOIP_LONGITUDE_V6", lonstr);
+				}
+				if (cfg->GeoIPOutput & GEOIP_ENV) {
+					apr_table_setn(r->subprocess_env, "GEOIP_LONGITUDE_V6", lonstr);
+				}
+				if (gir->postal_code != NULL) {
+					if (cfg->GeoIPOutput & GEOIP_NOTES) {
+						apr_table_set(r->notes, "GEOIP_POSTAL_CODE_V6", gir->postal_code);
+					}
+					if (cfg->GeoIPOutput & GEOIP_ENV) {
+						apr_table_set(r->subprocess_env, "GEOIP_POSTAL_CODE_V6", gir->postal_code);
+					}
+				}
+				GeoIPRecord_delete(gir);
+			}
+			break;
 		case GEOIP_CITY_EDITION_REV0:
 		case GEOIP_CITY_EDITION_REV1:
 			gir = GeoIP_record_by_addr(cfg->gips[i], ipaddr);
@@ -562,7 +683,7 @@ geoip_header_parser(request_rec * r)
 			        if ( gir->country_code != NULL ) {
 				  region_name = GeoIP_region_name_by_code(gir->country_code, gir->region);
 				}
-				sprintf(dmacodestr, "%d", gir->dma_code);
+				sprintf(metrocodestr, "%d", gir->dma_code);
 				sprintf(areacodestr, "%d", gir->area_code);
 				if (cfg->GeoIPOutput & GEOIP_NOTES) {
 					apr_table_setn(r->notes, "GEOIP_CONTINENT_CODE", gir->continent_code);
@@ -577,7 +698,8 @@ geoip_header_parser(request_rec * r)
 					if (gir->city != NULL) {
 						apr_table_set(r->notes, "GEOIP_CITY", gir->city);
 					}
-					apr_table_setn(r->notes, "GEOIP_DMA_CODE", dmacodestr);
+					apr_table_setn(r->notes, "GEOIP_DMA_CODE", metrocodestr);
+					apr_table_setn(r->notes, "GEOIP_METRO_CODE", metrocodestr);
 					apr_table_setn(r->notes, "GEOIP_AREA_CODE", areacodestr);
 				}
 				if (cfg->GeoIPOutput & GEOIP_ENV) {
@@ -593,7 +715,8 @@ geoip_header_parser(request_rec * r)
 					if (gir->city != NULL) {
 						apr_table_set(r->subprocess_env, "GEOIP_CITY", gir->city);
 					}
-					apr_table_setn(r->subprocess_env, "GEOIP_DMA_CODE", dmacodestr);
+					apr_table_setn(r->subprocess_env, "GEOIP_DMA_CODE", metrocodestr);
+					apr_table_setn(r->subprocess_env, "GEOIP_METRO_CODE", metrocodestr);
 					apr_table_setn(r->subprocess_env, "GEOIP_AREA_CODE", areacodestr);
 				}
 				sprintf(latstr, "%f", gir->latitude);
@@ -643,6 +766,17 @@ geoip_header_parser(request_rec * r)
 				}
 			}
 			break;
+		case GEOIP_DOMAIN_EDITION:
+			orgorisp = GeoIP_name_by_addr(cfg->gips[i], ipaddr);
+			if (orgorisp != NULL) {
+				if (cfg->GeoIPOutput & GEOIP_NOTES) {
+					apr_table_setn(r->notes, "GEOIP_DOMAIN", orgorisp);
+				}
+				if (cfg->GeoIPOutput & GEOIP_ENV) {
+					apr_table_setn(r->subprocess_env, "GEOIP_DOMAIN", orgorisp);
+				}
+			}
+			break;
 		}
 	}
 
@@ -650,6 +784,17 @@ geoip_header_parser(request_rec * r)
 }
 
 
+static const char *geoip_use_last_x_forwarded_for_ip(cmd_parms *cmd, void *dummy, int arg)
+{
+	geoip_server_config_rec *conf = (geoip_server_config_rec *)
+	ap_get_module_config(cmd->server->module_config, &geoip_module);
+
+	if (!conf)
+		return "mod_geoip: server structure not allocated";
+
+	conf->use_last_x_forwarded_for_ip = arg;
+	return NULL;
+}
 static const char *geoip_scanproxy(cmd_parms *cmd, void *dummy, int arg)
 {
 	geoip_server_config_rec *conf = (geoip_server_config_rec *)
@@ -778,6 +923,7 @@ static void *make_geoip(apr_pool_t *p, server_rec *d)
 static const command_rec geoip_cmds[] =
 {
 	AP_INIT_FLAG("GeoIPScanProxyHeaders", geoip_scanproxy, NULL, RSRC_CONF, "Get IP from HTTP_CLIENT IP or X-Forwarded-For"),
+	AP_INIT_FLAG("GeoIPUseLastXForwardedForIP", geoip_use_last_x_forwarded_for_ip, NULL, RSRC_CONF, "For more IP's in X-Forwarded-For, use the last"),
 	AP_INIT_FLAG("GeoIPEnable", set_geoip_enable, NULL, RSRC_CONF | OR_FILEINFO, "Turn on mod_geoip"),
 	AP_INIT_FLAG("GeoIPEnableUTF8", set_geoip_enable_utf8, NULL, RSRC_CONF, "Turn on utf8 characters for city names"),
 	AP_INIT_FLAG("GeoIPEnableHostnameLookups", set_geoip_enable_hostname, NULL, RSRC_CONF, "Turn on hostname lookups for GEOIP_HOST"),
