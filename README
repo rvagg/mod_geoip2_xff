@@ -1,4 +1,4 @@
-				mod_geoip2 1.2.5
+				mod_geoip2 1.2.7
 				----------------
 
 ======== OVERVIEW =========
@@ -102,7 +102,7 @@ Sets GEOIP_COUNTRY_CODE, GEOIP_REGION_NAME and GEOIP_REGION
 
 GeoIP City Edition:
 Sets GEOIP_CONTINENT_CODE, GEOIP_COUNTRY_CODE, GEOIP_REGION, 
-	GEOIP_REGION_NAME, GEOIP_CITY, GEOIP_DMA_CODE,
+	GEOIP_REGION_NAME, GEOIP_CITY, GEOIP_METRO_CODE,
         GEOIP_AREA_CODE, GEOIP_LATITUDE, GEOIP_LONGITUDE
 	and GEOIP_POSTAL_CODE
 
@@ -115,6 +115,10 @@ Sets GEOIP_ORGANIZATION
 
 GeoIP Netspeed Edition:
 Sets GEOIP_NETSPEED
+
+GeoIPv6 Edition ( experimental )
+Sets GEOIP_CONTINENT_CODE_V6, GEOIP_COUNTRY_CODE_V6,
+        GEOIP_COUNTRY_NAME_V6
 
 By default it sets both the notes table and environment variable.
 For performance reasons you may want to only set the one you use, to
@@ -164,6 +168,11 @@ GeoIPScanProxyHeaders On
 This only works if the first IP in the HTTP_X_FORWARDED_FOR list is the
 actual clientIP that you want to lookup.
 
+GeoIPUseLastXForwardedForIP On
+
+Use the last IP from the HTTP_X_FORWARDED_FOR header instead of the first one.
+GeoIPScanProxyHeaders must be enabled ( On ) otherwise
+GeoIPUseLastXForwardedForIP is ignored.
 
 ========= Server vs Directory context =========
 
