@@ -89,7 +89,8 @@ typedef struct {
 	int GeoIPFlags;
 	int *GeoIPFlags2;
 	int scanProxyHeaders;
-        int use_last_x_forwarded_for_ip;
+  int use_last_x_forwarded_for_ip;
+  int use_left_public_x_forwarded_for_ip;
 } geoip_server_config_rec;
 
 static const int GEOIP_NONE    = 0;
@@ -142,7 +143,8 @@ static void *create_geoip_server_config( apr_pool_t *p, server_rec *d )
 	conf->GeoIPFlags = GEOIP_STANDARD;
 	conf->GeoIPFlags2 = NULL;
 	conf->scanProxyHeaders = 0;
-        conf->use_last_x_forwarded_for_ip = 0;
+  conf->use_last_x_forwarded_for_ip = 0;
+  conf->use_left_public_x_forwarded_for_ip = 0;
 	return (void *)conf;
 }
 
@@ -371,6 +373,7 @@ geoip_header_parser(request_rec * r)
 	/* For splitting proxy headers */
 	char           *ipaddr_ptr = 0;
 	char           *comma_ptr;
+	char           *found_ip;
 	cfg = ap_get_module_config(r->server->module_config, &geoip_module);
 
 	if (!cfg)
@@ -399,31 +402,37 @@ geoip_header_parser(request_rec * r)
 		}
 		else {
 			ap_log_error(APLOG_MARK, APLOG_DEBUG | APLOG_NOERRNO, 0, r->server, "[mod_geoip]: IPADDR_PTR: %s", ipaddr_ptr);
-			// find the first public IP address in a potentially comma-separated list
-			char* found_ip = first_public_ip_in_list(ipaddr_ptr, r->connection->remote_ip);
-			/*
-			 * Check to ensure that the HTTP_CLIENT_IP or
-			 * X-Forwarded-For header is not a comma separated
-			 * list of addresses, which would cause mod_geoip to
-			 * return no country code. If the header is a comma
-			 * separated list, return the first IP address in the
-			 * list, which is (hopefully!) the real client IP.
-			 */
-			ipaddr = (char *) calloc(8*4+7+1, sizeof(char));
 
-			if (cfg->use_last_x_forwarded_for_ip ){
-				comma_ptr = strrchr(found_ip, ',');
-				if ( comma_ptr ) {
-					/* skip over whitespace */
-					found_ip = comma_ptr + strspn(comma_ptr, ", \t");
-				}
+			if (cfg->use_left_public_x_forwarded_for_ip) {
+				// find the first public IP address in a potentially comma-separated list,
+				// fall back to remote_ip if we can't find one
+				ipaddr = first_public_ip_in_list(ipaddr_ptr, r->connection->remote_ip);
+			} else {
+				// leaving some of the following inconsistent indenting intact for easier diff to original maxmind src
+
+                       /*
+                        * Check to ensure that the HTTP_CLIENT_IP or
+                        * X-Forwarded-For header is not a comma separated
+                        * list of addresses, which would cause mod_geoip to
+                        * return no country code. If the header is a comma
+                        * separated list, return the first IP address in the
+                        * list, which is (hopefully!) the real client IP.
+                        */
+                        ipaddr = (char *) calloc(8*4+7+1, sizeof(char));
+
+                        if (cfg->use_last_x_forwarded_for_ip ){
+                                comma_ptr = strrchr(ipaddr_ptr, ',');
+                                if ( comma_ptr ) {
+                                        /* skip over whitespace */
+                                        ipaddr_ptr = comma_ptr + strspn(comma_ptr, ", \t");
+                                }
+                        }
+
+                        strncpy(ipaddr, ipaddr_ptr, 8*4+7);
+                        comma_ptr = strchr(ipaddr, ',');
+                        if (comma_ptr != 0)
+                                *comma_ptr = '\0';
 			}
-
-			strncpy(ipaddr, found_ip, 8*4+7);
-			comma_ptr = strchr(ipaddr, ',');
-			if (comma_ptr != 0)
-				*comma_ptr = '\0';
-			free(found_ip);
  		}
 	}
 
@@ -796,6 +805,17 @@ static const char *geoip_use_last_x_forwarded_for_ip(cmd_parms *cmd, void *dummy
 	conf->use_last_x_forwarded_for_ip = arg;
 	return NULL;
 }
+static const char *geoip_use_left_public_x_forwarded_for_ip(cmd_parms *cmd, void *dummy, int arg)
+{
+	geoip_server_config_rec *conf = (geoip_server_config_rec *)
+	ap_get_module_config(cmd->server->module_config, &geoip_module);
+
+	if (!conf)
+		return "mod_geoip: server structure not allocated";
+
+	conf->use_left_public_x_forwarded_for_ip = arg;
+	return NULL;
+}
 static const char *geoip_scanproxy(cmd_parms *cmd, void *dummy, int arg)
 {
 	geoip_server_config_rec *conf = (geoip_server_config_rec *)
@@ -925,6 +945,13 @@ static const command_rec geoip_cmds[] =
 {
 	AP_INIT_FLAG("GeoIPScanProxyHeaders", geoip_scanproxy, NULL, RSRC_CONF, "Get IP from HTTP_CLIENT IP or X-Forwarded-For"),
 	AP_INIT_FLAG("GeoIPUseLastXForwardedForIP", geoip_use_last_x_forwarded_for_ip, NULL, RSRC_CONF, "For more IP's in X-Forwarded-For, use the last"),
+	AP_INIT_FLAG(
+			"GeoIPUseLeftPublicXForwardedForIP"
+		, geoip_use_left_public_x_forwarded_for_ip
+		, NULL
+		, RSRC_CONF
+		, "For more IP's in X-Forwarded-For, use the leftmost non-private address"
+	),
 	AP_INIT_FLAG("GeoIPEnable", set_geoip_enable, NULL, RSRC_CONF | OR_FILEINFO, "Turn on mod_geoip"),
 	AP_INIT_FLAG("GeoIPEnableUTF8", set_geoip_enable_utf8, NULL, RSRC_CONF, "Turn on utf8 characters for city names"),
 	AP_INIT_FLAG("GeoIPEnableHostnameLookups", set_geoip_enable_hostname, NULL, RSRC_CONF, "Turn on hostname lookups for GEOIP_HOST"),
