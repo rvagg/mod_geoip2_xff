@@ -304,7 +304,7 @@ int ipregexok = -1;
 regex_t ipcompiledregex;
 regex_t privipcompiledregex;
 
-char* first_public_ip_in_list(char* instr) {
+char* first_public_ip_in_list(char* instr, char* remote_ip) {
 	if (ipregexok = -1)
 		ipregexok = (regcomp(&ipcompiledregex, ipregex, REG_EXTENDED) == 0 && regcomp(&privipcompiledregex, privipregex, REG_EXTENDED) == 0) ? 1 : 0;
 
@@ -340,10 +340,11 @@ char* first_public_ip_in_list(char* instr) {
 		free(privmatches);
 	}
 	if (!match) {
-		//return original string
-		int len = strlen(instr) + 1;
+		// We did not find any public IP in the X-Forwarded-For chain...
+		// let's use the remote_ip as our last chance as we won't get any result from XFF IPs anyway. 
+		int len = strlen(remote_ip) + 1;
 		match = malloc(len);
-		strncpy(match, instr, len);
+		strncpy(match, remote_ip, len);
 	}
 	return match;
 }
@@ -399,7 +400,7 @@ geoip_header_parser(request_rec * r)
 		else {
 			ap_log_error(APLOG_MARK, APLOG_DEBUG | APLOG_NOERRNO, 0, r->server, "[mod_geoip]: IPADDR_PTR: %s", ipaddr_ptr);
 			// find the first public IP address in a potentially comma-separated list
-			char* found_ip = first_public_ip_in_list(ipaddr_ptr);
+			char* found_ip = first_public_ip_in_list(ipaddr_ptr, r->connection->remote_ip);
 			/*
 			 * Check to ensure that the HTTP_CLIENT_IP or
 			 * X-Forwarded-For header is not a comma separated
