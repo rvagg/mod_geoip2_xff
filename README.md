@@ -16,14 +16,13 @@ module follows the rule:
 You can compare with the current MaxMind release
 [here](https://github.com/rvagg/mod_geoip2_xff/compare/maxmind...master).
 
-*Note: There is a GeoIPEnableHostnameLookups flag, don't use it, it can
-lead to lengthy blocking lookups, I'll be removing it at some point
-unless someone wants to contribute a lookup that can timeout after a
-very short period.*
+To enable this special mode you need to turn the **GeoIPUseLeftPublicXForwardedForIP**
+flag **On** in your apache config.
 
-Contributions more than welcome! I haven't done any serious C for a long
-time so it's not a natural language for me any more and this module
-isn't a high priority for me.
+Contributions more than welcome!
+
+Thanks to Kevin Gaudin for his contributions to fall back to the RemoteIP
+where we fail to find a public IP address match.
 
 Original MaxMind README is
 [here](https://github.com/rvagg/mod_geoip2_xff/blob/master/README).
