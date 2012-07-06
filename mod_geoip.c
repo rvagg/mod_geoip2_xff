@@ -60,6 +60,12 @@
  *
  * Initial port Contributed by Corris Randall <corris@cpan.org>
  *
+ * Improved X-Forwarded-For handling by Rod Vagg <rod@vagg.org>
+ * http://rod.vagg.org/2012/04/a-mod_geoip2-that-properly-handles-x-forwarded-for/
+ * (GeoIPUseLeftPublicXForwardedForIP)
+ *
+ * Additional contributions by Kevin Gaudin <kevin.gaudin@gmail.com>
+ *
  */
 
 #include "httpd.h"
