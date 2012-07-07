@@ -90,6 +90,7 @@ typedef struct {
 	char **GeoIPFilenames;
 	int GeoIPEnabled;
 	int GeoIPEnableUTF8;
+	int GeoIPEnableHostnameLookups;
 	char GeoIPOutput;
 	int GeoIPFlags;
 	int *GeoIPFlags2;
@@ -143,6 +144,7 @@ static void *create_geoip_server_config( apr_pool_t *p, server_rec *d )
 	conf->GeoIPFilenames = NULL;
 	conf->GeoIPEnabled = 0;
 	conf->GeoIPEnableUTF8 = 0;
+	conf->GeoIPEnableHostnameLookups = 0;
 	conf->GeoIPOutput = GEOIP_INIT;
 	conf->GeoIPFlags = GEOIP_STANDARD;
 	conf->GeoIPFlags2 = NULL;
@@ -470,13 +472,21 @@ geoip_header_parser(request_rec * r)
 		}
 	}
 #endif
+	unsigned long ip = inet_addr(ipaddr);
+	char *hostname;
+	struct hostent *host = NULL;
+	if (cfg->GeoIPEnableHostnameLookups)
+		host = gethostbyaddr((char *)&ip, 4, AF_INET);
+	hostname = host != NULL ? host->h_name : ipaddr;
 
-  if (cfg->GeoIPOutput & GEOIP_NOTES) {
-                        apr_table_setn(r->notes, "GEOIP_ADDR", ipaddr);
-  }
-  if (cfg->GeoIPOutput & GEOIP_ENV) { 
-         apr_table_setn(r->subprocess_env, "GEOIP_ADDR", ipaddr);
-  }
+	if (cfg->GeoIPOutput & GEOIP_NOTES) {
+	 apr_table_setn(r->notes, "GEOIP_ADDR", ipaddr);
+	 apr_table_setn(r->notes, "GEOIP_HOST", hostname);
+	}
+	if (cfg->GeoIPOutput & GEOIP_ENV) { 
+				 apr_table_setn(r->subprocess_env, "GEOIP_ADDR", ipaddr);
+	 apr_table_setn(r->subprocess_env, "GEOIP_HOST", hostname);
+	}
 
 	for (i = 0; i < cfg->numGeoIPFiles; i++) {
 
@@ -859,6 +869,19 @@ static const char *set_geoip_enable_utf8(cmd_parms *cmd, void *dummy, int arg)
 }
 
 
+static const char *set_geoip_enable_hostname(cmd_parms *cmd, void *dummy, int arg)
+{
+	geoip_server_config_rec *conf = (geoip_server_config_rec *)
+	ap_get_module_config(cmd->server->module_config, &geoip_module);
+
+	if (!conf)
+		return "mod_geoip: server structure not allocated";
+
+	conf->GeoIPEnableHostnameLookups = arg;
+	return NULL;
+}
+
+
 static const char *set_geoip_filename(cmd_parms *cmd, void *dummy, const char *filename,const char *arg2)
 {
 	int i;
@@ -916,6 +939,7 @@ static void *make_geoip(apr_pool_t *p, server_rec *d)
 	dcfg->GeoIPFilenames = NULL;
 	dcfg->GeoIPEnabled = 0;
 	dcfg->GeoIPEnableUTF8 = 0;
+	dcfg->GeoIPEnableHostnameLookups = 0;
 	dcfg->GeoIPOutput = GEOIP_INIT;
 	dcfg->GeoIPFlags = GEOIP_STANDARD;
 	dcfg->GeoIPFlags2 = NULL;
@@ -936,6 +960,7 @@ static const command_rec geoip_cmds[] =
 	),
 	AP_INIT_FLAG("GeoIPEnable", set_geoip_enable, NULL, RSRC_CONF | OR_FILEINFO, "Turn on mod_geoip"),
 	AP_INIT_FLAG("GeoIPEnableUTF8", set_geoip_enable_utf8, NULL, RSRC_CONF, "Turn on utf8 characters for city names"),
+	AP_INIT_FLAG("GeoIPEnableHostnameLookups", set_geoip_enable_hostname, NULL, RSRC_CONF, "Turn on hostname lookups for GEOIP_HOST"),
 	AP_INIT_TAKE12("GeoIPDBFile", set_geoip_filename, NULL, RSRC_CONF, "Path to GeoIP Data File"),
 	AP_INIT_ITERATE("GeoIPOutput", set_geoip_output, NULL, RSRC_CONF, "Specify output method(s)"),
 	{NULL}
