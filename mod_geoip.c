@@ -380,6 +380,9 @@ geoip_header_parser(request_rec * r)
 	char           *ipaddr_ptr = 0;
 	char           *comma_ptr;
 	char           *found_ip;
+	apr_sockaddr_t *sa;
+	char           *hostname = 0;
+
 	cfg = ap_get_module_config(r->server->module_config, &geoip_module);
 
 	if (!cfg)
@@ -472,20 +475,23 @@ geoip_header_parser(request_rec * r)
 		}
 	}
 #endif
-	unsigned long ip = inet_addr(ipaddr);
-	char *hostname;
-	struct hostent *host = NULL;
-	if (cfg->GeoIPEnableHostnameLookups)
-		host = gethostbyaddr((char *)&ip, 4, AF_INET);
-	hostname = host != NULL ? host->h_name : ipaddr;
+
+	if (cfg->GeoIPEnableHostnameLookups
+			&& apr_sockaddr_info_get(&sa, ipaddr, APR_INET, 0, 0, r->pool) == APR_SUCCESS
+			&& apr_getnameinfo(&hostname, sa, 0) == APR_SUCCESS) {
+		ap_str_tolower(hostname);
+	}
+
+	if (!hostname)
+		hostname = ipaddr;
 
 	if (cfg->GeoIPOutput & GEOIP_NOTES) {
-	 apr_table_setn(r->notes, "GEOIP_ADDR", ipaddr);
-	 apr_table_setn(r->notes, "GEOIP_HOST", hostname);
+		apr_table_setn(r->notes, "GEOIP_ADDR", ipaddr);
+		apr_table_setn(r->notes, "GEOIP_HOST", hostname);
 	}
-	if (cfg->GeoIPOutput & GEOIP_ENV) { 
-				 apr_table_setn(r->subprocess_env, "GEOIP_ADDR", ipaddr);
-	 apr_table_setn(r->subprocess_env, "GEOIP_HOST", hostname);
+	if (cfg->GeoIPOutput & GEOIP_ENV) {
+		apr_table_setn(r->subprocess_env, "GEOIP_ADDR", ipaddr);
+		apr_table_setn(r->subprocess_env, "GEOIP_HOST", hostname);
 	}
 
 	for (i = 0; i < cfg->numGeoIPFiles; i++) {

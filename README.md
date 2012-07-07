@@ -1,3 +1,8 @@
+# mod_geoip2_xff
+
+**mod_geoip2 with fancy, new-fangled X-Forwarded-For handling**
+---------------------
+
 A fork of [MaxMind](http://www.maxmind.com)'s
 [mod_geoip2](http://www.maxmind.com/app/mod_geoip) with more intelligent
 X-Forwarded-For handling, as per
@@ -19,6 +24,14 @@ You can compare with the current MaxMind release
 To enable this special mode you need to turn the **GeoIPUseLeftPublicXForwardedForIP**
 flag **On** in your apache config.
 
+An additional config option is also available: **GeoIPEnableHostnameLookups**, when
+set to **On** mod_geoip2 will attempt to resolve the matched IP address and store
+the result in the GEOIP_HOST environment variable. This is useful for logging or
+other basic remote host based configuration.
+
+Changes for this fork are being recorded in the
+[Changes](https://github.com/rvagg/mod_geoip2_xff/blob/master/Changes) file.
+
 Contributions more than welcome!
 
 Thanks to Kevin Gaudin for his contributions to fall back to the RemoteIP
@@ -29,3 +42,5 @@ Original MaxMind README is
 
 Follow the same instructions found in the original
 [INSTALL](https://github.com/rvagg/mod_geoip2_xff/blob/master/INSTALL).
+
+**See [Downloads](https://github.com/rvagg/mod_geoip2_xff/downloads) for tarballs.**
