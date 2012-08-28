@@ -328,12 +328,14 @@ char* first_public_ip_in_list(char* instr, char* remote_ip) {
 		while (regexec(&ipcompiledregex, str, 1, matches, 0) == 0) {
 			int eo = matches[0].rm_eo;
 			if (matches[0].rm_so > -1){
-				match = malloc(len);
 				len = eo - matches[0].rm_so;
+				match = malloc(len + 1);
 				strncpy(match, str + matches[0].rm_so, len);
 				match[len] = 0;
-				if (regexec(&privipcompiledregex, match, 1, privmatches, 0) != 0 || privmatches[0].rm_so < 0)
+				if (regexec(&privipcompiledregex, match, 1, privmatches, 0) != 0 || privmatches[0].rm_so < 0) {
 					break;
+				}
+
 				free(match);
 				match = 0;
 			}
@@ -344,6 +346,7 @@ char* first_public_ip_in_list(char* instr, char* remote_ip) {
 				break;
 		}
 		free(tmp);
+		free(str);
 		free(matches);
 		free(privmatches);
 	}
