@@ -1,6 +1,15 @@
         - Support Aapche 2.4 ( Boris Zentner )
         - Use GeoIP_id_by_addr_v6 instead of GeoIP_country_id_by_addr_v6 ( Boris Zentner )
         - Include util_script.h to silence warning about ap_add_common_vars ( Boris Zentner )
+1.2.7-RV4 Aug 29th 2012
+	- bug fix from @KevinGaudin, bad string length allocation for matches, see PR #2
+1.2.7-RV3 Jul 7th 2012
+	- Introduced GeoIPEnableHostnameLookups config option to do name lookups on the X-Forwarded-For match, result is stored in GEOIP_HOST environment variable (useful for logging amongst other things) (Rod Vagg)
+1.2.7-RV2 Jul 6th 2012
+	- Added fallback to remote_ip where X-Forwarded-For handler fails to find a non-private match (Kevin Gaudin)
+	- Introduced GeoIPUseLeftPublicXForwardedForIP config option to switch to new X-Forwarded-For handler, left GeoIPUseLastXForwardedForIP and default option in place and still active (Rod Vagg)
+1.2.7-RV1 Apr 22nd 2012
+	- Added proper X-Forwarded-For handling, see http://rod.vagg.org/2012/04/a-mod_geoip2-that-properly-handles-x-forwarded-for/ (Rod Vagg)
 1.2.7 Aug 23th 2011
         - Add support for GEOIP_NETSPEED_REV1 ( Boris Zentner )
         - Experimental support for GEOIP_COUNTRY_EDITION_V6 ( Boris Zentner )

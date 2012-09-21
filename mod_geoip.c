@@ -60,6 +60,12 @@
  *
  * Initial port Contributed by Corris Randall <corris@cpan.org>
  *
+ * Improved X-Forwarded-For handling by Rod Vagg <rod@vagg.org>
+ * http://rod.vagg.org/2012/04/a-mod_geoip2-that-properly-handles-x-forwarded-for/
+ * (GeoIPUseLeftPublicXForwardedForIP)
+ *
+ * Additional contributions by Kevin Gaudin <kevin.gaudin@gmail.com>
+ *
  */
 
 #include "httpd.h"
@@ -71,6 +77,9 @@
 #include "util_script.h"
 #include <GeoIP.h>
 #include <GeoIPCity.h>
+#include <regex.h>
+#include <arpa/inet.h>
+#include <netdb.h>
 
 typedef struct {
   int GeoIPEnabled;
@@ -82,11 +91,13 @@ typedef struct {
 	char **GeoIPFilenames;
 	int GeoIPEnabled;
 	int GeoIPEnableUTF8;
+	int GeoIPEnableHostnameLookups;
 	char GeoIPOutput;
 	int GeoIPFlags;
 	int *GeoIPFlags2;
 	int scanProxyHeaders;
-        int use_last_x_forwarded_for_ip;
+  int use_last_x_forwarded_for_ip;
+  int use_left_public_x_forwarded_for_ip;
 } geoip_server_config_rec;
 
 static const int GEOIP_NONE    = 0;
@@ -134,11 +145,13 @@ static void *create_geoip_server_config( apr_pool_t *p, server_rec *d )
 	conf->GeoIPFilenames = NULL;
 	conf->GeoIPEnabled = 0;
 	conf->GeoIPEnableUTF8 = 0;
+	conf->GeoIPEnableHostnameLookups = 0;
 	conf->GeoIPOutput = GEOIP_INIT;
 	conf->GeoIPFlags = GEOIP_STANDARD;
 	conf->GeoIPFlags2 = NULL;
 	conf->scanProxyHeaders = 0;
-        conf->use_last_x_forwarded_for_ip = 0;
+  conf->use_last_x_forwarded_for_ip = 0;
+  conf->use_left_public_x_forwarded_for_ip = 0;
 	return (void *)conf;
 }
 
@@ -294,6 +307,59 @@ geoip_per_dir(request_rec * r)
 	return geoip_header_parser(r);
 }
 
+char* ipregex = "([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3})";
+char* privipregex = "(^127\\.0\\.0\\.1)|(^10\\.)|(^172\\.1[6-9]\\.)|(^172\\.2[0-9]\\.)|(^172\\.3[0-1]\\.)|(^192\\.168\\.)";
+int ipregexok = -1;
+regex_t ipcompiledregex;
+regex_t privipcompiledregex;
+
+char* first_public_ip_in_list(char* instr, char* remote_ip) {
+	if (ipregexok = -1)
+		ipregexok = (regcomp(&ipcompiledregex, ipregex, REG_EXTENDED) == 0 && regcomp(&privipcompiledregex, privipregex, REG_EXTENDED) == 0) ? 1 : 0;
+
+	char* match = 0;
+	if (ipregexok) {
+		int len = sizeof(char) * strlen(instr) + 1;
+		int matched = 0;
+		char* str = malloc(len);
+		strcpy(str, instr);
+		char* tmp = malloc(len);
+		regmatch_t* matches = malloc(sizeof(regmatch_t));
+		regmatch_t* privmatches = malloc(sizeof(regmatch_t));
+		while (regexec(&ipcompiledregex, str, 1, matches, 0) == 0) {
+			int eo = matches[0].rm_eo;
+			if (matches[0].rm_so > -1){
+				len = eo - matches[0].rm_so;
+				match = malloc(len + 1);
+				strncpy(match, str + matches[0].rm_so, len);
+				match[len] = 0;
+				if (regexec(&privipcompiledregex, match, 1, privmatches, 0) != 0 || privmatches[0].rm_so < 0) {
+					break;
+				}
+
+				free(match);
+				match = 0;
+			}
+			if (eo < strlen(str)) {
+				strcpy(tmp, str + eo);
+				strcpy(str, tmp);
+			} else
+				break;
+		}
+		free(tmp);
+		free(str);
+		free(matches);
+		free(privmatches);
+	}
+	if (!match) {
+		// We did not find any public IP in the X-Forwarded-For chain...
+		// let's use the remote_ip as our last chance as we won't get any result from XFF IPs anyway. 
+		int len = strlen(remote_ip) + 1;
+		match = malloc(len);
+		strncpy(match, remote_ip, len);
+	}
+	return match;
+}
 
 static int 
 geoip_header_parser(request_rec * r)
@@ -317,6 +383,10 @@ geoip_header_parser(request_rec * r)
 	/* For splitting proxy headers */
 	char           *ipaddr_ptr = 0;
 	char           *comma_ptr;
+	char           *found_ip;
+	apr_sockaddr_t *sa;
+	char           *hostname = 0;
+
 	cfg = ap_get_module_config(r->server->module_config, &geoip_module);
 
 	if (!cfg)
@@ -353,6 +423,14 @@ geoip_header_parser(request_rec * r)
 		}
 		else {
 			ap_log_error(APLOG_MARK, APLOG_DEBUG | APLOG_NOERRNO, 0, r->server, "[mod_geoip]: IPADDR_PTR: %s", ipaddr_ptr);
+
+			if (cfg->use_left_public_x_forwarded_for_ip) {
+				// find the first public IP address in a potentially comma-separated list,
+				// fall back to remote_ip if we can't find one
+				ipaddr = first_public_ip_in_list(ipaddr_ptr, r->connection->remote_ip);
+			} else {
+				// leaving some of the following inconsistent indenting intact for easier diff to original maxmind src
+
                        /*
                         * Check to ensure that the HTTP_CLIENT_IP or
                         * X-Forwarded-For header is not a comma separated
@@ -375,6 +453,7 @@ geoip_header_parser(request_rec * r)
                         comma_ptr = strchr(ipaddr, ',');
                         if (comma_ptr != 0)
                                 *comma_ptr = '\0';
+			}
  		}
 	}
 
@@ -409,12 +488,23 @@ geoip_header_parser(request_rec * r)
 	}
 #endif
 
-  if (cfg->GeoIPOutput & GEOIP_NOTES) {
-		         apr_table_setn(r->notes, "GEOIP_ADDR", ipaddr);
-  }
-  if (cfg->GeoIPOutput & GEOIP_ENV) { 
-         apr_table_setn(r->subprocess_env, "GEOIP_ADDR", ipaddr);
-  }
+	if (cfg->GeoIPEnableHostnameLookups
+			&& apr_sockaddr_info_get(&sa, ipaddr, APR_INET, 0, 0, r->pool) == APR_SUCCESS
+			&& apr_getnameinfo(&hostname, sa, 0) == APR_SUCCESS) {
+		ap_str_tolower(hostname);
+	}
+
+	if (!hostname)
+		hostname = ipaddr;
+
+	if (cfg->GeoIPOutput & GEOIP_NOTES) {
+		apr_table_setn(r->notes, "GEOIP_ADDR", ipaddr);
+		apr_table_setn(r->notes, "GEOIP_HOST", hostname);
+	}
+	if (cfg->GeoIPOutput & GEOIP_ENV) {
+		apr_table_setn(r->subprocess_env, "GEOIP_ADDR", ipaddr);
+		apr_table_setn(r->subprocess_env, "GEOIP_HOST", hostname);
+	}
 
 	for (i = 0; i < cfg->numGeoIPFiles; i++) {
 
@@ -739,6 +829,17 @@ static const char *geoip_use_last_x_forwarded_for_ip(cmd_parms *cmd, void *dummy
 	conf->use_last_x_forwarded_for_ip = arg;
 	return NULL;
 }
+static const char *geoip_use_left_public_x_forwarded_for_ip(cmd_parms *cmd, void *dummy, int arg)
+{
+	geoip_server_config_rec *conf = (geoip_server_config_rec *)
+	ap_get_module_config(cmd->server->module_config, &geoip_module);
+
+	if (!conf)
+		return "mod_geoip: server structure not allocated";
+
+	conf->use_left_public_x_forwarded_for_ip = arg;
+	return NULL;
+}
 static const char *geoip_scanproxy(cmd_parms *cmd, void *dummy, int arg)
 {
 	geoip_server_config_rec *conf = (geoip_server_config_rec *)
@@ -785,6 +886,17 @@ static const char *set_geoip_enable_utf8(cmd_parms *cmd, void *dummy, int arg)
 	return NULL;
 }
 
+static const char *set_geoip_enable_hostname(cmd_parms *cmd, void *dummy, int arg)
+{
+	geoip_server_config_rec *conf = (geoip_server_config_rec *)
+	ap_get_module_config(cmd->server->module_config, &geoip_module);
+
+	if (!conf)
+		return "mod_geoip: server structure not allocated";
+
+	conf->GeoIPEnableHostnameLookups = arg;
+	return NULL;
+}
 
 static const char *set_geoip_filename(cmd_parms *cmd, void *dummy, const char *filename,const char *arg2)
 {
@@ -843,6 +955,7 @@ static void *make_geoip(apr_pool_t *p, server_rec *d)
 	dcfg->GeoIPFilenames = NULL;
 	dcfg->GeoIPEnabled = 0;
 	dcfg->GeoIPEnableUTF8 = 0;
+	dcfg->GeoIPEnableHostnameLookups = 0;
 	dcfg->GeoIPOutput = GEOIP_INIT;
 	dcfg->GeoIPFlags = GEOIP_STANDARD;
 	dcfg->GeoIPFlags2 = NULL;
@@ -854,8 +967,16 @@ static const command_rec geoip_cmds[] =
 {
 	AP_INIT_FLAG("GeoIPScanProxyHeaders", geoip_scanproxy, NULL, RSRC_CONF, "Get IP from HTTP_CLIENT IP or X-Forwarded-For"),
 	AP_INIT_FLAG("GeoIPUseLastXForwardedForIP", geoip_use_last_x_forwarded_for_ip, NULL, RSRC_CONF, "For more IP's in X-Forwarded-For, use the last"),
+	AP_INIT_FLAG(
+			"GeoIPUseLeftPublicXForwardedForIP"
+		, geoip_use_left_public_x_forwarded_for_ip
+		, NULL
+		, RSRC_CONF
+		, "For more IP's in X-Forwarded-For, use the leftmost non-private address"
+	),
 	AP_INIT_FLAG("GeoIPEnable", set_geoip_enable, NULL, RSRC_CONF | OR_FILEINFO, "Turn on mod_geoip"),
 	AP_INIT_FLAG("GeoIPEnableUTF8", set_geoip_enable_utf8, NULL, RSRC_CONF, "Turn on utf8 characters for city names"),
+	AP_INIT_FLAG("GeoIPEnableHostnameLookups", set_geoip_enable_hostname, NULL, RSRC_CONF, "Turn on hostname lookups for GEOIP_HOST"),
 	AP_INIT_TAKE12("GeoIPDBFile", set_geoip_filename, NULL, RSRC_CONF, "Path to GeoIP Data File"),
 	AP_INIT_ITERATE("GeoIPOutput", set_geoip_output, NULL, RSRC_CONF, "Specify output method(s)"),
 	{NULL}

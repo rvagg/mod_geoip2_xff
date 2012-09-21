@@ -1,0 +1,4 @@
+mod_geoip.la
+mod_geoip.lo
+mod_geoip.slo
+.libs
